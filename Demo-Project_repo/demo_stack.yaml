@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS Meetup Demo Deployment
+Parameters:
+  VPC:
+    Description: Choose the VPC to deploy in to
+    Type: 'AWS::EC2::VPC::Id'
+    Default: vpc-66e6f803
+  Subnets:
+    Description: choose the Subnets to deploy in to
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Default: 'subnet-f0e484b9,subnet-18b81c7c'
+  TargetAMI:
+    Description: Enter a valid AMI Id
+    Type: String
+    Default: ami-0c3228fd049cdb151
+  EC2KeyPair:
+    Description: Amazon EC2 Key Pair
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: test-geethika
+  InstanceType:
+    Description: Enter a valid Instance Type
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+  ASGMinSize:
+    Description: Enter a MinSize for the AutoScalingGroup
+    Type: Number
+    Default: 1
+  ASGMaxSize:
+    Description: Enter a MaxSize for the AutoScalingGroup
+    Type: Number
+    Default: 3
+  ASGDesiredCapacity:
+    Description: Enter a DesiredCapacity for the AutoScalingGroup
+    Type: Number
+    Default: 2
+Resources:
+  DemoEC2Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: TaggingAccessForInstance
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:Describe*'
+                  - 'ec2:CreateTags'
+                Resource: '*'
+  DemoInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref DemoEC2Role
+  DemoSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Demo security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: 0.0.0.0/0
+  DemoLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Scheme: internet-facing
+      Subnets: !Ref Subnets
+      SecurityGroups:
+        - !Ref DemoSecurityGroup
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: 5
+  DemoTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      HealthCheckPath: /demo-site/
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 5
+  DemoListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      LoadBalancerArn: !Ref DemoLoadBalancer
+      DefaultActions:
+        - TargetGroupArn: !Ref DemoTargetGroup
+          Type: forward
+      Port: 80
+      Protocol: HTTP
+  DemoLaunchConfiguration:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: !Ref TargetAMI
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref EC2KeyPair
+      IamInstanceProfile: !Ref DemoInstanceProfile
+      SecurityGroups:
+        - !Ref DemoSecurityGroup
+      UserData: !Base64 
+        'Fn::Sub': >
+          #!/bin/bash -xe
+
+          yum install -y aws-cfn-bootstrap
+
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource
+          WebServerGroup --region ${AWS::Region}
+            
+  DemoAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier: !Ref Subnets
+      LaunchConfigurationName: !Ref DemoLaunchConfiguration
+      HealthCheckGracePeriod: 900
+      HealthCheckType: ELB
+      TerminationPolicies:
+        - ClosestToNextInstanceHour
+      MinSize: !Ref ASGMinSize
+      MaxSize: !Ref ASGMaxSize
+      DesiredCapacity: !Ref ASGDesiredCapacity
+      MetricsCollection:
+        - Granularity: 1Minute
+          Metrics:
+            - GroupTotalInstances
+            - GroupPendingInstances
+            - GroupTerminatingInstances
+      TargetGroupARNs:
+        - !Ref DemoTargetGroup
+      Tags:
+        - Key: Name
+          Value: DemoInstance
+          PropagateAtLaunch: true
+        - Key: Role
+          Value: Demo
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        PauseTime: PT2M
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+          - AlarmNotification
+          - ScheduledActions
+        #MinInstancesInService: !Ref ASGDesiredCapacity
+        #MinSuccessfulInstancesPercent: 100
+        #WaitOnResourceSignals: true
+  DemoScaleOutPolicy:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref DemoAutoScalingGroup
+      Cooldown: 300
+      ScalingAdjustment: 1
+  DemoCPUAlarmHigh:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      EvaluationPeriods: 1
+      Statistic: Average
+      Threshold: 70
+      AlarmDescription: Alarm Demo Instance CPU too high
+      Period: 600
+      AlarmActions:
+        - !Ref DemoScaleOutPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref DemoAutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+  DemoScaleInPolicy:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref DemoAutoScalingGroup
+      Cooldown: 600
+      ScalingAdjustment: -1
+  WorkeCPUAlarmLow:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      EvaluationPeriods: 1
+      Statistic: Average
+      Threshold: 40
+      AlarmDescription: Alarm Demo Instance CPU too high
+      Period: 1200
+      AlarmActions:
+        - !Ref DemoScaleInPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref DemoAutoScalingGroup
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
+Outputs:
+  LoadBalancerDNSName:
+    Description: The DNSName of the load balancer
+    Value: !GetAtt DemoLoadBalancer.DNSName

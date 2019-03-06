@@ -1,0 +1,59 @@
+{
+  "variables": {
+    "vpc": "{{env `BUILD_VPC_ID`}}",
+    "subnet": "{{env `BUILD_SUBNET_ID`}}",
+    "aws_region": "{{env `AWS_REGION`}}",
+    "ami_name": "AWS-Meetup-AMI-{{isotime \"02-Jan-06 03_04_05\"}}",
+    "ami_os": "windows",
+    "instance_profile": "AMIBuilderProfile"
+  },
+  "builders": [{
+    "name": "AWS Meetup AMI Builder",
+    "type": "amazon-ebs",
+    "region": "{{user `aws_region`}}",
+    "iam_instance_profile": "{{user `instance_profile`}}",
+    "communicator": "ssh", 
+    "ssh_username": "ec2-user",
+    "source_ami": "ami-0c3228fd049cdb151",
+    "instance_type": "t2.micro",
+    "ami_name": "{{user `ami_name` | clean_ami_name}}",
+    "tags": {
+      "Name": "{{user `ami_name`}}"
+    },
+    "run_tags": { 
+      "Name": "{{user `ami_name`}}"
+    },
+    "run_volume_tags": {
+      "Name": "{{user `ami_name`}}"
+    },
+    "snapshot_tags": {
+      "Name": "{{user `ami_name`}}"
+    },
+    "ami_description": "AWS Meetup Demo AMI",
+    "associate_public_ip_address": "true",
+    "vpc_id": "{{user `vpc`}}",
+    "subnet_id": "{{user `subnet`}}"
+  }],
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "sudo yum install -y httpd",
+        "sudo systemctl start httpd",
+        "sudo systemctl enable httpd",
+        "cd /var/www/html/",
+        "sudo mkdir demo-site",
+        "sudo chown  ec2-user demo-site",
+        "sudo chmod -R o+r demo-site",
+        "cd demo-site",
+        "echo \"<html><h1>This page was genereated at $(env TZ=Pacific/Auckland date)</h1></html>\" > index.html"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "echo \"AMI Baked....\""
+      ]
+    }
+  ]
+}
